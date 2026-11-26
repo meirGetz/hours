@@ -1,5 +1,5 @@
 // מאפשר לאפליקציה להיפתח גם בלי אינטרנט. תמיד מנסה קודם את הגרסה העדכנית.
-const CACHE = 'hours-v1';
+const CACHE = 'hours-v2';
 const SHELL = ['./', './index.html', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {

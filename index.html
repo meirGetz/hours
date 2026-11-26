@@ -134,7 +134,7 @@ pre.export{white-space:pre-wrap;background:var(--bg);border-radius:12px;padding:
 
 <header>
   <h1>⏱️ דיווח שעות</h1>
-  <div class="hright"><span id="sync"></span><button class="gear" id="adminBtn" aria-label="ניהול" style="display:none">👑</button><button class="gear" id="gear" aria-label="הגדרות">⚙️</button></div>
+  <div class="hright"><span id="sync"></span><button class="gear" id="bizBtn" style="display:none;width:auto;padding:0 10px;font-size:14px;font-family:inherit"></button><button class="gear" id="ownerBtn" aria-label="ניהול עסקים" style="display:none">🏛️</button><button class="gear" id="adminBtn" aria-label="ניהול" style="display:none">👑</button><button class="gear" id="gear" aria-label="הגדרות">⚙️</button></div>
 </header>
 
 <section class="card hero">
@@ -192,10 +192,11 @@ pre.export{white-space:pre-wrap;background:var(--bg);border-radius:12px;padding:
         <option value="holiday">🕯️ חג</option>
         <option value="short">⚠️ ימים מתחת לתקן</option>
         <option value="open">🟢 כניסה בלי יציאה</option>
+        <option value="late">✏️ ימים שתוקנו בדיעבד</option>
       </select></div>
     </div>
     <div class="two" style="margin-top:10px;margin-bottom:8px"><button class="btn primary" id="aCsv">⬇️ ייצוא לאקסל</button><button class="btn" id="aWa">💬 סיכום לוואטסאפ</button></div>
-    <button class="btn" id="aOrg" style="width:100%;margin-bottom:8px;display:none">🌳 מבנה ארגוני וחסימות</button>
+    <div class="two" style="margin-bottom:8px"><button class="btn" id="aOrg" style="display:none">🌳 מבנה ארגוני וחסימות</button><button class="btn" id="aAdmins" style="display:none">👥 אדמינים של העסק</button></div>
     <div class="two" style="margin-bottom:0"><button class="btn primary" id="aNs" style="background:#125e8a;border-color:#125e8a">🔗 CSV ל-NetSuite</button><button class="btn" id="aNsSet">⚙️ הגדרות NetSuite</button></div>
   </section>
   <div id="aBody"></div>
@@ -204,6 +205,14 @@ pre.export{white-space:pre-wrap;background:var(--bg);border-radius:12px;padding:
   <div style="font-size:56px">⏱️</div>
   <h2>דיווח שעות</h2>
   <p id="loginTxt">התחבר עם חשבון Google, והדיווחים שלך יישמרו בענן בכל מכשיר ולתמיד.</p>
+  <div id="joinBox" style="display:none;margin-bottom:12px">
+    <input id="joinCode" class="ltr" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX"
+      style="width:100%;font-size:20px;letter-spacing:2px;text-align:center;padding:12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;font-family:inherit">
+    <button class="btn primary" id="joinBtn" style="width:100%">Join</button>
+    <div class="hint" id="joinMsg" style="margin-top:8px"></div>
+  </div>
+  <button class="btn" id="ownerBtn2" style="display:none;width:100%;margin-bottom:8px">🏛️ ניהול עסקים</button>
+  <button class="btn" id="switchBtn2" style="display:none;width:100%;margin-bottom:8px">🏢 Switch business</button>
   <button class="btn primary" id="gBtn">התחברות עם Google</button>
   <div class="hint" id="loginErr" style="margin-top:12px"></div>
 </div></div>
@@ -212,7 +221,7 @@ pre.export{white-space:pre-wrap;background:var(--bg);border-radius:12px;padding:
 import { firebaseConfig } from './config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, setDoc, getDoc, getDocs, deleteDoc, collection, onSnapshot, terminate, clearIndexedDbPersistence, Timestamp, query, where, limit, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, setDoc, getDoc, getDocs, deleteDoc, updateDoc, collection, onSnapshot, terminate, clearIndexedDbPersistence, Timestamp, query, where, limit, writeBatch, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 /* ---------- constants & helpers ---------- */
 const ABS = {
@@ -290,6 +299,7 @@ function cleanMonth(m){
     out.days[dk] = {s, a, n: str(d.n, 500)};
     if(d.f === true) out.days[dk].f = true;
     if(d.r === true) out.days[dk].r = true;   // עבודה במהלך מילואים
+    if(d.e === true) out.days[dk].e = true;   // תוקן בדיעבד
   }
   return out;
 }
@@ -301,13 +311,28 @@ function stdFor(dk){ const w = parseDK(dk).getDay(); if(w===4) return settings.t
 function absDayMin(dk){ return parseDK(dk).getDay()===4 ? settings.thu*60 : settings.std*60; }
 
 function getDay(dk){ const m = months[monthOf(dk)]; return m && m.days && m.days[dk] || null; }
-function setDay(dk, day){
+/* כל שינוי ביום נשמר יחד עם רשומה ביומן השינויים, באותה פעולה (הכללים ב-Firebase דורשים את זה) */
+const LATE_MS = 36 * 3600 * 1000;
+function isLateDay(dk){ return parseDK(dk).getTime() < Date.now() - LATE_MS; }
+function setDay(dk, day, action){
   const mk = monthOf(dk);
   if(!months[mk]) months[mk] = {days:{}};
   if(!months[mk].days) months[mk].days = {};
-  const empty = !day || ((!day.s || !day.s.length) && !day.a && !(day.n||'').trim());
-  if(empty) delete months[mk].days[dk]; else months[mk].days[dk] = day;
-  persist(mk);
+  const before = months[mk].days[dk] ? JSON.parse(JSON.stringify(months[mk].days[dk])) : null;
+  const empty = !day || ((!day.s || !day.s.length) && !day.a && !(day.n||'').trim() && !day.f);
+  // מנרמלים בדיוק כמו בקריאה מהענן, כדי שהיומן ("לפני"/"אחרי") יתאים אחד-לאחד למה שנשמר
+  let after = empty ? null : cleanMonth({days: {[dk]: JSON.parse(JSON.stringify(day))}}).days[dk];
+  // עריכה של יום שעבר (או של יום שכבר תוקן בדיעבד) מסומנת לתמיד
+  if(after && (isLateDay(dk) || (before && before.e))) after.e = true;
+  if(JSON.stringify(before) === JSON.stringify(after)) return;
+  if(after) months[mk].days[dk] = after; else delete months[mk].days[dk];
+  saveLocal();
+  if(!fdb || !uid || !bid) return;
+  const aRef = doc(collection(fdb, ...BP(), 'users', uid, 'audit'));
+  const batch = writeBatch(fdb);
+  batch.set(aRef, {at: serverTimestamp(), by: uid, dk, action: str(action || 'edit', 20), before, after});
+  batch.set(doc(fdb, ...BP(), 'users', uid, 'data', 'm-' + mk), {days: JSON.parse(JSON.stringify(months[mk].days)), lastAudit: aRef.id});
+  batch.commit().catch(e => setSync('⚠️ השינוי לא נשמר (' + (e.code || '') + ') – רענן ונסה שוב'));
 }
 function sessMin(s, dk){
   if(!s.i) return 0;
@@ -388,14 +413,16 @@ function loadLocal(){
 function saveLocal(){ try{ localStorage.setItem(LS, JSON.stringify(months)); localStorage.setItem(LSS, JSON.stringify(settings)); }catch(e){} }
 function hasLocalSettings(){ try{ return !!localStorage.getItem(LSS); }catch(e){ return false; } }
 let fdb = null, auth = null, uid = null, currentUser = null, unsub = null, unsubLeave = null, unsubPending = null;
+// ---- עסקים: כל הנתונים של עסק נמצאים תחת businesses/<bid>
+let bid = null, bizName = '', myBiz = [], isPlatform = false;
+const BP = () => { if(!bid) throw new Error('no business selected'); return ['businesses', bid]; };
 function writeDoc(id, body){
   saveLocal();
   if(!fdb || !uid) return;
   // Firestore שומר מיד במטמון המקומי ומסנכרן לענן כשיש אינטרנט
-  setDoc(doc(fdb, 'users', uid, 'data', id), JSON.parse(JSON.stringify(body)))
+  setDoc(doc(fdb, ...BP(), 'users', uid, 'data', id), JSON.parse(JSON.stringify(body)))
     .catch(e => setSync('⚠️ שגיאת שמירה: ' + (e.code || '')));
 }
-function persist(mk){ writeDoc('m-'+mk, months[mk] || {days:{}}); }
 function persistSettings(){ writeDoc('settings', {std: settings.std, thu: settings.thu, nsUser: settings.nsUser}); }
 function setSync(t){ $('sync').textContent = t; }
 function showLogin(v){ $('login').classList.toggle('show', v); }
@@ -413,43 +440,59 @@ if(!configured){
   onAuthStateChanged(auth, async user => {
     if(unsub){ unsub(); unsub = null; }
     blockedMode = false; $('gBtn').textContent = 'התחברות עם Google'; if(unsubPending && !user){ unsubPending(); unsubPending = null; }
-    if(!user){ if(unsubLeave){ unsubLeave(); unsubLeave = null; } myLeave = null; uid = null; currentUser = null; isAdmin = false; isSuper = false; isManager = false; $('loginTxt').textContent = 'התחבר עם חשבון Google, והדיווחים שלך יישמרו בענן בכל מכשיר ולתמיד.'; $('adminBtn').style.display = 'none'; $('adminView').classList.remove('show'); months = {}; settings = DEFAULT_SETTINGS(); render(); setSync(''); showLogin(true); return; }
-    // משתמש חסום לא נכנס לאפליקציה (וגם הכללים ב-Firebase חוסמים אותו)
+    if(!user){ bid = null; myBiz = []; isPlatform = false; $('bizBtn').style.display = 'none'; $('ownerBtn').style.display = 'none'; $('joinBox').style.display = 'none'; $('ownerBtn2').style.display = 'none'; $('switchBtn2').style.display = 'none'; if(unsubLeave){ unsubLeave(); unsubLeave = null; } myLeave = null; uid = null; currentUser = null; isAdmin = false; isSuper = false; isManager = false; $('loginTxt').textContent = 'התחבר עם חשבון Google, והדיווחים שלך יישמרו בענן בכל מכשיר ולתמיד.'; $('adminBtn').style.display = 'none'; $('adminView').classList.remove('show'); months = {}; settings = DEFAULT_SETTINGS(); render(); setSync(''); showLogin(true); return; }
+    // ---- בעל המערכת, ורשימת העסקים שהמשתמש חבר בהם
+    uid = null; currentUser = user;
+    $('joinBox').style.display = 'none'; $('ownerBtn2').style.display = 'none'; $('switchBtn2').style.display = 'none';
+    try{ isPlatform = (await getDoc(doc(fdb, 'admins', (user.email || '').toLowerCase()))).exists(); }catch(e){ isPlatform = false; }
+    $('ownerBtn').style.display = isPlatform ? '' : 'none';
+    myBiz = await loadMyBiz(user.uid);
+    let savedBid = null; try{ savedBid = localStorage.getItem('hours.bid.' + user.uid); }catch(e){}
+    bid = myBiz.some(x => x.id === savedBid) ? savedBid : (myBiz[0] ? myBiz[0].id : null);
+    if(!bid){ showJoinScreen(user); return; }
+    bizName = (myBiz.find(x => x.id === bid) || {}).name || '';
+    renderBizChip();
     let o = null, superNow = false;
-    try{ o = await getDoc(doc(fdb, 'org', user.uid)); }catch(e){}
-    try{ superNow = (await getDoc(doc(fdb, 'admins', (user.email || '').toLowerCase()))).exists(); }catch(e){}
+    try{ o = await getDoc(doc(fdb, ...BP(), 'org', user.uid)); }catch(e){}
+    try{ superNow = (await getDoc(doc(fdb, ...BP(), 'admins', (user.email || '').toLowerCase()))).exists(); }catch(e){}
     {
       if(o && o.exists() && o.data().blocked === true){
         blockedMode = true; uid = null; currentUser = user;
-        $('loginTxt').textContent = '⛔ החשבון שלך חסום. לפרטים פנה למנהל.';
+        $('loginTxt').textContent = '⛔ החשבון שלך חסום בעסק "' + bizName + '". לפרטים פנה למנהל.';
+        $('switchBtn2').style.display = myBiz.length > 1 ? '' : 'none';
         $('gBtn').textContent = 'התנתקות'; $('gBtn').style.display = '';
         months = {}; render(); setSync(''); showLogin(true); return;
       }
     }
+    // אדמין של העסק שעוד אין לו רשומה בעץ – מאשר את עצמו
+    if(o && !o.exists() && superNow){
+      try{ await setDoc(doc(fdb, ...BP(), 'org', user.uid), {manager:'', ancestors:[], blocked:false, name: str(user.displayName || user.email || '', 80)}); }catch(e){}
+    }
     // משתמש חדש שעוד לא אושר ושובץ בעץ – ממתין לאישור אדמין ולא יכול לעשות כלום
     if(o && !o.exists() && !superNow){
       blockedMode = true; uid = null; currentUser = user;
-      setDoc(doc(fdb, 'users', user.uid), {name: user.displayName || '', email: (user.email || '').toLowerCase(), lastSeen: dateKey(new Date())}, {merge:true}).catch(()=>{});
-      $('loginTxt').innerHTML = '<b>⏳ Waiting for admin approval</b><br>Your account was created successfully. An administrator needs to approve you and assign you to your team before you can start reporting hours. This page will open automatically once you are approved.';
+      setDoc(doc(fdb, ...BP(), 'users', user.uid), {name: user.displayName || '', email: (user.email || '').toLowerCase(), lastSeen: dateKey(new Date())}, {merge:true}).catch(()=>{});
+      $('switchBtn2').style.display = '';
+      $('loginTxt').innerHTML = '<b>⏳ Waiting for admin approval</b><br>Business: <b>' + esc(bizName) + '</b><br>Your account was created successfully. An administrator needs to approve you and assign you to your team before you can start reporting hours. This page will open automatically once you are approved.';
       $('loginErr').innerHTML = `<span class="ltr">${esc(user.email || '')}</span>`;
       $('gBtn').textContent = 'Sign out'; $('gBtn').style.display = '';
       months = {}; render(); setSync(''); showLogin(true);
       if(unsubPending) unsubPending();
-      unsubPending = onSnapshot(doc(fdb, 'org', user.uid), snap => { if(snap.exists()) location.reload(); }, () => {});
+      unsubPending = onSnapshot(doc(fdb, ...BP(), 'org', user.uid), snap => { if(snap.exists()) location.reload(); }, () => {});
       return;
     }
     if(unsubPending){ unsubPending(); unsubPending = null; }
     $('loginErr').textContent = '';
     $('loginTxt').textContent = 'התחבר עם חשבון Google, והדיווחים שלך יישמרו בענן בכל מכשיר ולתמיד.';
     uid = user.uid; currentUser = user;
-    setDoc(doc(fdb, 'users', uid), {name: user.displayName || '', email: (user.email || '').toLowerCase(), lastSeen: dateKey(new Date())}, {merge:true}).catch(()=>{});
+    setDoc(doc(fdb, ...BP(), 'users', uid), {name: user.displayName || '', email: (user.email || '').toLowerCase(), lastSeen: dateKey(new Date())}, {merge:true}).catch(()=>{});
     checkAdmin(user);
     loadNsCfg().then(() => render());
-    LS = 'hours.months.' + uid; LSS = 'hours.settings.' + uid;
+    LS = 'hours.months.' + uid + '.' + bid; LSS = 'hours.settings.' + uid + '.' + bid;
     loadLocal(); showLogin(false); render();
     setSync('⏳ מסתנכרן…');
     let first = true;
-    unsub = onSnapshot(collection(fdb, 'users', uid, 'data'), {includeMetadataChanges:true}, snap => {
+    unsub = onSnapshot(collection(fdb, ...BP(), 'users', uid, 'data'), {includeMetadataChanges:true}, snap => {
       const remote = {}; let rs = null;
       snap.docs.forEach(d => {
         if(d.id.startsWith('m-')) remote[d.id.slice(2)] = JSON.parse(JSON.stringify(d.data()));
@@ -458,7 +501,6 @@ if(!configured){
       if(snap.metadata.fromCache && snap.empty && first){ setSync('📴 אין חיבור – יסונכרן אחר כך'); return; }
       if(first && !snap.metadata.fromCache){
         first = false;
-        Object.keys(months).forEach(mk => { if(!remote[mk]){ remote[mk] = months[mk]; persist(mk); } });
         if(!rs && hasLocalSettings()){ rs = settings; persistSettings(); }
       }
       months = cleanMonths(remote);
@@ -489,7 +531,7 @@ $('mainBtn').onclick = () => {
   if(open){
     const day = JSON.parse(JSON.stringify(getDay(open.dk)));
     day.s[open.idx].o = t;
-    setDay(open.dk, day);
+    setDay(open.dk, day, 'out');
     toast('👋 יציאה נרשמה ב-' + t);
     renderProj();
   } else {
@@ -498,7 +540,7 @@ $('mainBtn').onclick = () => {
     const ss = {i:t, o:null};
     if(pendingProj){ ss.c = pendingProj.customer; ss.t = pendingProj.task; setPending(null); }
     day.s.push(ss);
-    setDay(today, day);
+    setDay(today, day, 'in');
     toast('✅ כניסה נרשמה ב-' + t);
   }
   render();
@@ -536,7 +578,7 @@ function openProjPicker(){
     if(open){
       const day = JSON.parse(JSON.stringify(getDay(open.dk))), s = day.s[open.idx];
       if(isDef){ delete s.c; delete s.t; } else { s.c = p.customer; s.t = p.task; }
-      setDay(open.dk, day);
+      setDay(open.dk, day, 'project');
     } else setPending(isDef ? null : p);
     closeSheet(); render(); toast('📁 ' + optLabel(p));
   });
@@ -624,7 +666,7 @@ function renderMonth(){
     const tot = totalMin(day,dk), diff = tot - stdFor(dk);
     html += `<div class="day${wk}" data-dk="${dk}">
       <div class="d">${DOW[dow]}<small>${pad(d)}/${pad(m)}</small></div>
-      <div class="mid">${absChip(day.a)}${day.f ? '<span class="chip">📎</span>' : ''}${day.r ? '<span class="chip">🪖 מילואים</span>' : ''}${sess}${day.n?`<div class="note">${esc(day.n)}</div>`:''}</div>
+      <div class="mid">${absChip(day.a)}${day.f ? '<span class="chip">📎</span>' : ''}${day.r ? '<span class="chip">🪖 מילואים</span>' : ''}${day.e ? '<span class="chip" style="background:#fff3d6;color:#8a5a00">✏️</span>' : ''}${sess}${day.n?`<div class="note">${esc(day.n)}</div>`:''}</div>
       <div class="tot ltr">${fmt(tot)}<small class="${diff<0?'neg':'pos'}">${fmt(diff,true)}</small></div></div>`;
   }
   if(!html) html = '<div class="note" style="text-align:center;padding:14px">אין עדיין ימים בחודש הזה</div>';
@@ -674,7 +716,7 @@ async function fileToPayload(file){
 }
 async function openAttachment(ownerUid, dk){
   try{
-    const snap = await getDoc(doc(fdb, 'users', ownerUid, 'files', dk));
+    const snap = await getDoc(doc(fdb, ...BP(), 'users', ownerUid, 'files', dk));
     if(!snap.exists()){ toast('האישור לא נמצא'); return; }
     const f = snap.data();
     const bin = atob(f.data), arr = new Uint8Array(bin.length);
@@ -687,9 +729,9 @@ async function openAttachment(ownerUid, dk){
   }catch(e){ toast('שגיאה בפתיחת האישור (' + (e.code || e.message) + ')'); }
 }
 async function removeAttachment(dk){
-  try{ await deleteDoc(doc(fdb, 'users', uid, 'files', dk)); }catch(e){}
+  try{ await deleteDoc(doc(fdb, ...BP(), 'users', uid, 'files', dk)); }catch(e){}
   const day = getDay(dk);
-  if(day && day.f){ const d2 = JSON.parse(JSON.stringify(day)); delete d2.f; setDay(dk, d2); }
+  if(day && day.f){ const d2 = JSON.parse(JSON.stringify(day)); delete d2.f; setDay(dk, d2, 'detach'); }
 }
 
 /* ---------- edit day ---------- */
@@ -734,6 +776,8 @@ function openEdit(dk, focusAbs){
     if(draft.s.length) h += `<label class="chk" style="margin-top:12px"><input type="checkbox" id="resv" ${draft.r ? 'checked' : ''}> 🪖 עבודה במהלך מילואים <span class="note ltr">(Work At Reserve Duty)</span></label>`;
     h += `<div class="lbl">הערה</div><textarea id="note" rows="2" placeholder="לא חובה">${esc(draft.n||'')}</textarea>`;
     h += `<div class="preview" id="prev"></div>`;
+    if(src && uid) h += `<button class="btn" id="histBtn" style="width:100%;margin-top:8px">🕓 היסטוריית שינויים${src.e ? ' · ✏️ תוקן בדיעבד' : ''}</button>`;
+    if(isLateDay(dk)) h += `<div class="hint" style="margin-top:6px">✏️ זה יום שעבר – שינוי בו יסומן אצל המנהל כ"תוקן בדיעבד" ויירשם ביומן.</div>`;
     h += `<div class="actions"><button class="btn primary" id="save">שמירה</button><button class="btn" id="cancel">ביטול</button></div>`;
     if(src) h += `<button class="btn danger${armed?' armed':''}" id="clear" style="width:100%;margin-top:8px">${armed?'לחץ שוב לאישור מחיקה':'🗑️ מחיקת כל היום'}</button>`;
     sheet.innerHTML = h;
@@ -752,6 +796,7 @@ function openEdit(dk, focusAbs){
     $('absSeg').querySelectorAll('button').forEach(b => b.onclick = () => { draft.a = b.dataset.t ? {t:b.dataset.t, p: draft.a ? draft.a.p : 1} : null; draw(); });
     if($('portSeg')) $('portSeg').querySelectorAll('button').forEach(b => b.onclick = () => { draft.a.p = +b.dataset.p; draw(); });
     $('note').oninput = e => draft.n = e.target.value;
+    if($('histBtn')) $('histBtn').onclick = () => openHistory(uid, dk, '', () => { draw(); });
     if($('resv')) $('resv').onchange = e => { if(e.target.checked) draft.r = true; else delete draft.r; };
     if($('attFile')){
       const pick = () => $('attFile').click();
@@ -764,8 +809,8 @@ function openEdit(dk, focusAbs){
         $('attMsg').textContent = '⏳ מעלה…';
         try{
           const p = await fileToPayload(file);
-          await setDoc(doc(fdb, 'users', uid, 'files', dk), {name: p.name, type: p.type, data: p.data, size: p.data.length, at: dateKey(new Date())});
-          const day = JSON.parse(JSON.stringify(getDay(dk))); day.f = true; setDay(dk, day);
+          await setDoc(doc(fdb, ...BP(), 'users', uid, 'files', dk), {name: p.name, type: p.type, data: p.data, size: p.data.length, at: dateKey(new Date())});
+          const day = JSON.parse(JSON.stringify(getDay(dk))); day.f = true; setDay(dk, day, 'attach');
           src = getDay(dk); draft.f = true; draw(); toast('📎 האישור נשמר');
         }catch(err){ $('attMsg').textContent = '⚠️ ' + (err.message || err.code || 'ההעלאה נכשלה'); }
       };
@@ -776,13 +821,13 @@ function openEdit(dk, focusAbs){
       draft.s.sort((a,b) => a.i.localeCompare(b.i));
       draft.n = (draft.n||'').replace(/\s+/g,' ').trim();
       if(!draft.s.length) delete draft.r;
-      if(draft.f && !(draft.a && NOTE_TYPES.includes(draft.a.t))){ delete draft.f; deleteDoc(doc(fdb, 'users', uid, 'files', dk)).catch(()=>{}); }
-      setDay(dk, draft); closeSheet(); render(); toast('נשמר ✔︎');
+      if(draft.f && !(draft.a && NOTE_TYPES.includes(draft.a.t))){ delete draft.f; deleteDoc(doc(fdb, ...BP(), 'users', uid, 'files', dk)).catch(()=>{}); }
+      setDay(dk, draft, src ? 'edit' : 'add'); closeSheet(); render(); toast('נשמר ✔︎');
     };
     if($('clear')) $('clear').onclick = () => {
       if(!armed){ armed = true; draw(); return; }
-      if(src && src.f && uid) deleteDoc(doc(fdb, 'users', uid, 'files', dk)).catch(()=>{});
-      setDay(dk, null); closeSheet(); render(); toast('היום נמחק');
+      if(src && src.f && uid) deleteDoc(doc(fdb, ...BP(), 'users', uid, 'files', dk)).catch(()=>{});
+      setDay(dk, null, 'delete'); closeSheet(); render(); toast('היום נמחק');
     };
     if(focusAbs){ focusAbs = false; setTimeout(()=> $('absSeg').scrollIntoView({block:'center'}), 50); }
   }
@@ -967,7 +1012,10 @@ function openRestore(){
   $('rCancel').onclick = closeSheet;
   $('rGo').onclick = () => {
     if(!parsed) return;
-    Object.keys(parsed.months).forEach(mk => { months[mk] = cleanMonth(parsed.months[mk]); persist(mk); });
+    Object.keys(parsed.months).forEach(mk => {
+      const nm = cleanMonth(parsed.months[mk]).days, old = (months[mk] && months[mk].days) || {};
+      new Set([...Object.keys(nm), ...Object.keys(old)]).forEach(dk => setDay(dk, nm[dk] || null, 'restore'));
+    });
     if(parsed.settings){ settings = withLeave(parsed.settings, myLeave); persistSettings(); }
     const mks = Object.keys(parsed.months).sort();
     if(mks.length) viewMonth = mks[mks.length-1];
@@ -983,30 +1031,30 @@ let isAdmin = false, team = [];
 let isSuper = false, isManager = false;
 async function checkAdmin(user){
   isSuper = false; isManager = false;
-  try{ isSuper = (await getDoc(doc(fdb, 'admins', (user.email || '').toLowerCase()))).exists(); }catch(e){}
+  try{ isSuper = (await getDoc(doc(fdb, ...BP(), 'admins', (user.email || '').toLowerCase()))).exists(); }catch(e){}
   if(!isSuper){
-    try{ isManager = !(await getDocs(query(collection(fdb, 'org'), where('ancestors', 'array-contains', user.uid), limit(1)))).empty; }catch(e){}
+    try{ isManager = !(await getDocs(query(collection(fdb, ...BP(), 'org'), where('ancestors', 'array-contains', user.uid), limit(1)))).empty; }catch(e){}
   }
   isAdmin = isSuper || isManager;
   $('adminBtn').style.display = isAdmin ? '' : 'none';
-  ['aNsSet', 'aOrg'].forEach(id => { if($(id)) $(id).style.display = isSuper ? '' : 'none'; });
-  $('aRole').textContent = isSuper ? 'אדמין-על – רואה את כולם' : isManager ? 'מנהל – רואה רק את העובדים שתחתיך' : '';
+  ['aNsSet', 'aOrg', 'aAdmins'].forEach(id => { if($(id)) $(id).style.display = isSuper ? '' : 'none'; });
+  $('aRole').textContent = (bizName ? bizName + ' · ' : '') + (isSuper ? 'אדמין העסק – רואה את כל העובדים בעסק' : isManager ? 'מנהל – רואה רק את העובדים שתחתיך' : '');
 }
 function withUser(u, fn){ const m = months, st = settings; months = u.months; settings = u.settings; try{ return fn(); } finally{ months = m; settings = st; } }
 async function loadTeam(){
   $('aBody').innerHTML = '<div class="note" style="text-align:center;padding:24px">טוען נתונים…</div>';
   let people = [], orgMap = {};
   if(isSuper){
-    const [us, os] = await Promise.all([getDocs(collection(fdb, 'users')), getDocs(collection(fdb, 'org'))]);
+    const [us, os] = await Promise.all([getDocs(collection(fdb, ...BP(), 'users')), getDocs(collection(fdb, ...BP(), 'org'))]);
     os.forEach(o => orgMap[o.id] = o.data());
     people = us.docs.map(d => ({id:d.id, data:() => d.data()}));
   } else {
-    const os = await getDocs(query(collection(fdb, 'org'), where('ancestors', 'array-contains', uid)));
+    const os = await getDocs(query(collection(fdb, ...BP(), 'org'), where('ancestors', 'array-contains', uid)));
     os.forEach(o => orgMap[o.id] = o.data());
-    people = await Promise.all(os.docs.map(async o => { const p = await getDoc(doc(fdb, 'users', o.id)); return {id:o.id, data:() => p.exists() ? p.data() : {}}; }));
+    people = await Promise.all(os.docs.map(async o => { const p = await getDoc(doc(fdb, ...BP(), 'users', o.id)); return {id:o.id, data:() => p.exists() ? p.data() : {}}; }));
   }
   team = await Promise.all(people.map(async d => {
-    const p = d.data(); const ds = await getDocs(collection(fdb, 'users', d.id, 'data'));
+    const p = d.data(); const ds = await getDocs(collection(fdb, ...BP(), 'users', d.id, 'data'));
     const mo = {}; let st = null;
     ds.forEach(x => { if(x.id.startsWith('m-')) mo[x.id.slice(2)] = JSON.parse(JSON.stringify(x.data())); else if(x.id === 'settings') st = x.data(); });
     const og = orgMap[d.id] || null;
@@ -1051,6 +1099,7 @@ function dayMatch(type, dk, d){
     case 'sick': case 'child': case 'parent': case 'vac': case 'course': case 'holiday': return !!(d.a && d.a.t === type);
     case 'short': return (w > 0 || d.a) && tot < stdFor(dk);
     case 'open': return (d.s || []).some(s => !s.o);
+    case 'late': return d.e === true;
     default: return true;
   }
 }
@@ -1114,13 +1163,14 @@ function renderAdmin(){
     const d = parseDK(r.dk), diff = r.tot - r.std;
     const sess = (r.d.s || []).map(s => s.o ? `<span class="ltr">${s.i}–${s.o}</span>` : `<span class="ltr open">${s.i}–…</span>`).join(' · ');
     h += `<div class="arow"><div class="who">${esc(r.u.name)}<small>${DOW[d.getDay()]} ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${String(d.getFullYear()).slice(2)}</small></div>
-      <div class="mid">${absChip(r.d.a)}${r.d.f ? `<button class="chip" data-att="${esc(r.u.uid)}|${r.dk}" style="border:none;cursor:pointer">📎 אישור</button>` : ''}${r.d.r ? '<span class="chip">🪖 מילואים</span>' : ''}${sess}${r.d.n ? `<div class="note">${esc(r.d.n)}</div>` : ''}</div>
+      <div class="mid">${absChip(r.d.a)}${r.d.f ? `<button class="chip" data-att="${esc(r.u.uid)}|${r.dk}" style="border:none;cursor:pointer">📎 אישור</button>` : ''}${r.d.r ? '<span class="chip">🪖 מילואים</span>' : ''}${r.d.e ? `<button class="chip" data-hist="${esc(r.u.uid)}|${r.dk}" style="border:none;cursor:pointer;background:#fff3d6;color:#8a5a00">✏️ תוקן בדיעבד</button>` : `<button class="chip" data-hist="${esc(r.u.uid)}|${r.dk}" style="border:none;cursor:pointer;background:none;color:var(--mute)">🕓</button>`}${sess}${r.d.n ? `<div class="note">${esc(r.d.n)}</div>` : ''}</div>
       <div class="tot ltr">${fmt(r.tot)}<small class="${diff<0?'neg':'pos'}">${fmt(diff,true)}</small></div></div>`;
   });
   if(!rows.length) h += '<div class="note" style="text-align:center;padding:14px">אין ימים שמתאימים לסינון</div>';
   h += '</section>';
   $('aBody').innerHTML = h;
   if($('aPend')) $('aPend').onclick = () => openOrg();
+  $('aBody').querySelectorAll('[data-hist]').forEach(b => b.onclick = () => { const [u2, d2] = b.dataset.hist.split('|'); openHistory(u2, d2, (team.find(x => x.uid === u2) || {}).name); });
   $('aBody').querySelectorAll('[data-att]').forEach(b => b.onclick = () => { const [u2, d2] = b.dataset.att.split('|'); openAttachment(u2, d2); });
 }
 async function openAdmin(refresh){
@@ -1199,7 +1249,7 @@ function openOrg(){
   function draw(){
     const rows = treeOrder();
     sheet.innerHTML = `<h3>🌳 מבנה ארגוני וחסימות</h3>
-      <div class="hint">עובדים חדשים מופיעים כ"⏳ ממתין לאישור" ולא יכולים לדווח עד שתאשר אותם (או תבחר להם מנהל) ותשמור. דחייה = חסימה. לכל עובד בוחרים מנהל ישיר. כל מנהל רואה את כל מי שמתחתיו בעץ, כולל העובדים של המנהלים שלו, ולא רואה אף אחד אחר. אדמין-על רואה את כולם. עובד חסום לא יכול להיכנס לאפליקציה; הנתונים שלו נשמרים.</div>
+      <div class="hint">עובדים חדשים מופיעים כ"⏳ ממתין לאישור" ולא יכולים לדווח עד שתאשר אותם (או תבחר להם מנהל) ותשמור. דחייה = חסימה. לכל עובד בוחרים מנהל ישיר. כל מנהל רואה את כל מי שמתחתיו בעץ, כולל העובדים של המנהלים שלו, ולא רואה אף אחד אחר. אדמין העסק רואה את כולם. עובד חסום לא יכול להיכנס לאפליקציה; הנתונים שלו נשמרים.</div>
       ${rows.map(({u, depth, loop}) => `<div class="emp" style="margin-top:8px;margin-inline-start:${Math.min(depth, 6) * 16}px;${st[u.uid].blocked ? 'opacity:.6' : ''}">
         <div class="top"><span>${depth ? '↳ ' : ''}${esc(u.name)}${loop ? ' <span class="chip" style="background:var(--out-soft);color:var(--out)">⚠️ לולאה</span>' : ''}${!st[u.uid].approved ? ' <span class="chip" style="background:#fff3d6;color:#8a5a00">⏳ ממתין לאישור</span>' : ''}</span><span class="note ltr">${esc(u.email)}</span></div>
         ${!st[u.uid].approved ? `<div class="two" style="margin:8px 0 0"><button class="btn primary" data-apr="${esc(u.uid)}">✅ אישור</button><button class="btn danger" data-rej="${esc(u.uid)}">⛔ דחייה</button></div>` : ''}
@@ -1237,7 +1287,7 @@ function openOrg(){
       if(!st[u.uid].approved) return;          // ממתינים שלא אושרו – לא נוצרת להם רשומה, והם נשארים חסומים
       const next = {manager: byId[st[u.uid].manager] ? st[u.uid].manager : '', ancestors: anc[u.uid], blocked: st[u.uid].blocked, name: u.name.slice(0, 80)};
       const cur = u.org ? {manager: u.org.manager || '', ancestors: u.org.ancestors || [], blocked: !!u.org.blocked, name: u.name.slice(0, 80)} : null;
-      if(!cur || JSON.stringify(cur) !== JSON.stringify(next)){ batch.set(doc(fdb, 'org', u.uid), next); u.org = next; n++; }
+      if(!cur || JSON.stringify(cur) !== JSON.stringify(next)){ batch.set(doc(fdb, ...BP(), 'org', u.uid), next); u.org = next; n++; }
     });
     try{ if(n) await batch.commit(); closeSheet(); renderAdmin(); toast(n ? `המבנה נשמר ✔︎ (${n} עדכונים)` : 'אין שינויים'); }
     catch(e){ $('orgErr').textContent = '⚠️ השמירה נכשלה (' + (e.code || '') + ') – עדכנת את כללי Firestore?'; }
@@ -1280,7 +1330,7 @@ function myDefault(){ return nsEmp({uid, settings}); }
 function sessProj(s){ return (s.c || s.t) ? {customer:s.c, task:s.t} : null; }
 async function loadNsCfg(){
   try{
-    const snap = await getDoc(doc(fdb, 'config', 'netsuite'));
+    const snap = await getDoc(doc(fdb, ...BP(), 'config', 'netsuite'));
     const d = NS_DEFAULT(), v = snap.exists() ? snap.data() : {};
     NS_TYPES.forEach(([k]) => d.map[k] = Object.assign(d.map[k], v.map && v.map[k] || {}));
     d.employees = v.employees || {};
@@ -1326,7 +1376,7 @@ function openNsSettings(){
       const e = Object.assign({nsName: $('ne_'+u.uid+'_n').value.trim()}, keyOpt($('ne_'+u.uid+'_o').value));
       if(e.nsName || e.customer || e.task) cfg.employees[u.uid] = e;
     });
-    try{ await setDoc(doc(fdb, 'config', 'netsuite'), cfg); nsCfg = cfg; closeSheet(); toast('ההגדרות נשמרו ✔︎'); }
+    try{ await setDoc(doc(fdb, ...BP(), 'config', 'netsuite'), cfg); nsCfg = cfg; closeSheet(); toast('ההגדרות נשמרו ✔︎'); }
     catch(e){ toast('שמירה נכשלה (' + (e.code || '') + ') – עדכנת את כללי Firestore?'); }
   };
   showSheet();
@@ -1406,13 +1456,13 @@ function weekStartTs(){
   return Timestamp.fromDate(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
 }
 let expDoc = null;
-async function loadExports(){ try{ const s = await getDoc(doc(fdb, 'users', uid, 'meta', 'exports')); expDoc = s.exists() ? s.data() : null; }catch(e){} }
+async function loadExports(){ try{ const s = await getDoc(doc(fdb, ...BP(), 'users', uid, 'meta', 'exports')); expDoc = s.exists() ? s.data() : null; }catch(e){} }
 function exportsUsed(){ const ws = weekStartTs(); return expDoc && expDoc.weekStart && expDoc.weekStart.toMillis() === ws.toMillis() ? (expDoc.count || 0) : 0; }
 function exportsLeft(){ return isAdmin ? Infinity : Math.max(0, CSV_WEEKLY - exportsUsed()); }
 async function countExport(){
   if(isAdmin) return true;
   const next = {weekStart: weekStartTs(), count: exportsUsed() + 1};
-  try{ await setDoc(doc(fdb, 'users', uid, 'meta', 'exports'), next); expDoc = next; return true; }
+  try{ await setDoc(doc(fdb, ...BP(), 'users', uid, 'meta', 'exports'), next); expDoc = next; return true; }
   catch(e){ await loadExports(); return false; }
 }
 
@@ -1549,6 +1599,279 @@ function openCalc(){
   draw(); showSheet();
 }
 $('calcBtn').onclick = openCalc;
+
+
+/* ---------- עסקים: רשימת העסקים שלי, הצטרפות בקוד, מעבר בין עסקים ---------- */
+const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // 32 תווים, בלי O/0/I/1 שקל לבלבל
+const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+async function sha256hex(t){ const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''); }
+async function loadMyBiz(u){
+  try{
+    const ms = await getDocs(query(collection(fdb, 'memberships'), where('uid', '==', u)));
+    const list = await Promise.all(ms.docs.map(async m => {
+      const b = str(m.data().bid, 64); let name = b;
+      try{ const bs = await getDoc(doc(fdb, 'businesses', b)); if(bs.exists()) name = str(bs.data().name, 80) || b; }catch(e){}
+      return {id: b, name};
+    }));
+    return list.filter(x => x.id).sort((a, b) => a.name.localeCompare(b.name, 'he'));
+  }catch(e){ return []; }
+}
+function renderBizChip(){
+  const b = $('bizBtn');
+  b.textContent = '🏢 ' + (bizName.length > 14 ? bizName.slice(0, 13) + '…' : bizName) + ' ▾';
+  b.title = bizName; b.style.display = '';
+}
+async function joinWithCode(inputEl, msgEl){
+  const c = normCode(inputEl.value), me = auth.currentUser;
+  if(c.length !== 12){ msgEl.textContent = 'The code should have 12 characters (letters and digits).'; return; }
+  msgEl.textContent = 'Checking…';
+  try{
+    const h = await sha256hex(c);
+    const js = await getDoc(doc(fdb, 'joinCodes', h));
+    if(!js.exists() || js.data().active !== true){ msgEl.textContent = '❌ Invalid or inactive code.'; return; }
+    const b = js.data().bid;
+    if(!myBiz.some(x => x.id === b)) await setDoc(doc(fdb, 'memberships', me.uid + '_' + b), {uid: me.uid, bid: b, code: h, at: dateKey(new Date())});
+    try{ localStorage.setItem('hours.bid.' + me.uid, b); }catch(e){}
+    msgEl.textContent = '✅ Joined. Loading…';
+    location.reload();
+  }catch(e){ msgEl.textContent = '❌ Could not join (' + (e.code || e.message) + ')'; }
+}
+function showJoinScreen(user){
+  blockedMode = true;
+  $('loginTxt').innerHTML = '<b>🏢 Join your business</b><br>Enter the business code you received from your administrator.';
+  $('loginErr').innerHTML = `<span class="ltr">${esc(user.email || '')}</span>`;
+  $('joinBox').style.display = ''; $('joinCode').value = ''; $('joinMsg').textContent = '';
+  $('ownerBtn2').style.display = isPlatform ? '' : 'none';
+  $('gBtn').textContent = 'Sign out'; $('gBtn').style.display = '';
+  months = {}; render(); setSync(''); showLogin(true);
+}
+$('joinBtn').onclick = () => joinWithCode($('joinCode'), $('joinMsg'));
+$('joinCode').onkeydown = e => { if(e.key === 'Enter') joinWithCode($('joinCode'), $('joinMsg')); };
+function switchBiz(b){ try{ localStorage.setItem('hours.bid.' + auth.currentUser.uid, b); }catch(e){} location.reload(); }
+function openBizSwitcher(){
+  sheet.innerHTML = `<h3>🏢 העסקים שלי</h3>
+    <div class="seg" style="flex-direction:column;align-items:stretch">
+      ${myBiz.map(x => `<button data-biz="${esc(x.id)}" class="${x.id === bid ? 'on' : ''}" style="text-align:right;border-radius:12px">${esc(x.name)}${x.id === bid ? ' ✓' : ''}</button>`).join('')}
+    </div>
+    <div class="lbl">➕ הצטרפות לעסק נוסף</div>
+    <input id="joinCode2" class="ltr" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX"
+      style="width:100%;font-size:18px;letter-spacing:2px;text-align:center;padding:10px;border:1px solid var(--line);border-radius:12px;font-family:inherit">
+    <button class="btn primary" id="joinBtn2" style="width:100%;margin-top:8px">הצטרפות</button>
+    <div class="hint" id="joinMsg2" style="margin-top:6px"></div>
+    <div class="actions"><button class="btn" id="bzX">סגירה</button></div>`;
+  sheet.querySelectorAll('[data-biz]').forEach(b => b.onclick = () => { if(b.dataset.biz !== bid) switchBiz(b.dataset.biz); else closeSheet(); });
+  $('joinBtn2').onclick = () => joinWithCode($('joinCode2'), $('joinMsg2'));
+  $('bzX').onclick = () => { closeSheet(); if(blockedMode) showLogin(true); };
+  showSheet();
+}
+$('bizBtn').onclick = openBizSwitcher;
+$('switchBtn2').onclick = () => { showLogin(false); openBizSwitcher(); };
+
+
+/* ---------- 🏛️ ניהול עסקים – בעל המערכת בלבד ----------
+   הקוד נוצר אקראית בדפדפן, מוצג פעם אחת, ונשמר במסד הנתונים רק כטביעת אצבע (SHA-256).
+   בעל המערכת לא רואה דיווחים של עסקים – רק את רשימת העסקים והקודים. */
+function genCode(){
+  const r = new Uint32Array(12); crypto.getRandomValues(r);          // 2^32 מתחלק ב-32 → בלי הטיה
+  const c = [...r].map(x => CODE_ABC[x % 32]).join('');
+  return c.slice(0, 4) + '-' + c.slice(4, 8) + '-' + c.slice(8);
+}
+function showCodeOnce(name, code){
+  sheet.innerHTML = `<h3>🔑 קוד הצטרפות – ${esc(name)}</h3>
+    <div class="preview ltr" style="font-size:28px;font-weight:800;letter-spacing:3px">${esc(code)}</div>
+    <div class="hint" style="color:var(--out);margin-top:10px;line-height:1.7"><b>הקוד מוצג פעם אחת בלבד</b> ולא נשמר בשום מקום – גם לא אצלנו. העתק ושלח אותו עכשיו לאדמין של העסק או לעובדים. אם הוא יאבד, מייצרים קוד חדש (מי שכבר הצטרף לא נפגע).</div>
+    <div class="actions" style="flex-direction:column"><button class="btn primary" id="cCopy">📋 העתקת הקוד</button><button class="btn" id="cDone">סיימתי, הקוד אצלי</button></div>`;
+  $('cCopy').onclick = async () => { try{ await navigator.clipboard.writeText(code); toast('הקוד הועתק ✔︎'); }catch(e){ toast('סמן והעתק ידנית'); } };
+  $('cDone').onclick = () => { sheet.innerHTML = ''; openOwner(); };
+  showSheet();
+}
+async function ownerCode(b){
+  const od = await getDoc(doc(fdb, 'ownerData', b.id));
+  const old = od.exists() ? od.data().codeHash : null;
+  const code = genCode(), h = await sha256hex(normCode(code));
+  const batch = writeBatch(fdb);
+  if(old) batch.delete(doc(fdb, 'joinCodes', old));
+  batch.set(doc(fdb, 'joinCodes', h), {bid: b.id, active: b.joinOpen !== false});
+  batch.set(doc(fdb, 'ownerData', b.id), {codeHash: h});
+  await batch.commit();
+  showCodeOnce(b.name, code);
+}
+async function openOwner(){
+  if(!isPlatform) return;
+  sheet.innerHTML = '<h3>🏛️ ניהול עסקים</h3><div class="note" style="padding:16px;text-align:center">טוען…</div>'; showSheet();
+  let list = [], legacy = false;
+  try{ list = (await getDocs(collection(fdb, 'businesses'))).docs.map(d => ({id: d.id, name: str(d.data().name, 80), createdAt: str(d.data().createdAt, 10), joinOpen: d.data().joinOpen !== false})); }
+  catch(e){ sheet.innerHTML = `<h3>🏛️ ניהול עסקים</h3><div class="hint" style="color:var(--out)">אין הרשאה (${esc(e.code || '')}) – עדכנת את כללי Firestore?</div>`; return; }
+  try{ legacy = !(await getDocs(query(collection(fdb, 'users'), limit(1)))).empty; }catch(e){}
+  list.sort((a, b) => a.name.localeCompare(b.name, 'he'));
+  const inp = 'style="width:100%;font-size:15px;padding:9px;border:1px solid var(--line);border-radius:10px;font-family:inherit"';
+  sheet.innerHTML = `<h3>🏛️ ניהול עסקים</h3>
+    <div class="hint">כאן יוצרים עסקים ומייצרים קודי הצטרפות. את הדיווחים של העסקים אתה לא רואה – כדי לנהל עסק, הוסף את עצמך כאדמין שלו והצטרף עם הקוד.</div>
+    <h4>➕ עסק חדש</h4>
+    <div class="fld"><label>שם העסק</label><input id="nbName" ${inp}></div>
+    <div class="fld" style="margin-top:6px"><label>מייל של האדמין הראשון (Google)</label><input id="nbAdmin" class="ltr" ${inp}></div>
+    <button class="btn primary" id="nbGo" style="width:100%;margin-top:8px">יצירת עסק וקוד הצטרפות</button>
+    <div class="hint" id="nbMsg" style="color:var(--out)"></div>
+    <h4>🏢 העסקים (${list.length})</h4>
+    ${list.map(b => `<div class="emp" style="margin-top:8px"><div class="top"><span>${esc(b.name)}</span>
+      <span class="chip" style="${b.joinOpen ? '' : 'background:var(--out-soft);color:var(--out)'}">${b.joinOpen ? '🔓 הצטרפות פתוחה' : '🔒 הצטרפות סגורה'}</span></div>
+      <div class="meta">נוצר ${esc(b.createdAt)}</div>
+      <div class="two" style="margin:8px 0 6px"><button class="btn" data-code="${esc(b.id)}">🔑 קוד חדש</button><button class="btn" data-tog="${esc(b.id)}">${b.joinOpen ? '🔒 סגירת הצטרפות' : '🔓 פתיחת הצטרפות'}</button></div>
+      <div class="grid2" style="grid-template-columns:1fr auto"><input data-adm-in="${esc(b.id)}" class="ltr" placeholder="מייל של אדמין נוסף" ${inp}><button class="btn" data-adm="${esc(b.id)}">👤 הוספה</button></div>
+    </div>`).join('') || '<div class="note">אין עדיין עסקים</div>'}
+    ${legacy ? `<h4>📦 העברת הנתונים מהגרסה הקודמת</h4>
+      <div class="hint">העובדים, הדיווחים, האישורים, העץ הארגוני והגדרות NetSuite מהגרסה של עסק אחד יועתקו לעסק שתבחר. העובדים יופיעו בו כבר מאושרים, בלי צורך בקוד. אפשר להריץ שוב בבטחה.</div>
+      <select id="migTo" ${inp}>${list.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select>
+      <button class="btn primary" id="migGo" style="width:100%;margin-top:8px" ${list.length ? '' : 'disabled'}>העברת הנתונים</button>
+      <div class="hint" id="migMsg"></div>` : ''}
+    <div class="actions"><button class="btn" id="owX">סגירה</button></div>`;
+  $('owX').onclick = () => { closeSheet(); if(blockedMode) showLogin(true); };
+  $('nbGo').onclick = async () => {
+    const name = $('nbName').value.trim().slice(0, 80), em = $('nbAdmin').value.trim().toLowerCase();
+    if(!name){ $('nbMsg').textContent = 'צריך שם לעסק'; return; }
+    if(em && !/^[^\s@\/]+@[^\s@\/]+\.[^\s@\/]+$/.test(em)){ $('nbMsg').textContent = 'המייל לא תקין'; return; }
+    try{
+      const bref = doc(collection(fdb, 'businesses')), code = genCode(), h = await sha256hex(normCode(code));
+      const batch = writeBatch(fdb);
+      batch.set(bref, {name, createdAt: dateKey(new Date()), joinOpen: true, migration: false});
+      batch.set(doc(fdb, 'ownerData', bref.id), {codeHash: h});
+      batch.set(doc(fdb, 'joinCodes', h), {bid: bref.id, active: true});
+      if(em) batch.set(doc(fdb, 'businesses', bref.id, 'admins', em), {role: 'admin'});
+      await batch.commit();
+      showCodeOnce(name, code);
+    }catch(e){ $('nbMsg').textContent = 'היצירה נכשלה (' + (e.code || '') + ')'; }
+  };
+  sheet.querySelectorAll('[data-code]').forEach(btn => btn.onclick = async () => {
+    try{ await ownerCode(list.find(b => b.id === btn.dataset.code)); }catch(e){ toast('נכשל (' + (e.code || '') + ')'); }
+  });
+  sheet.querySelectorAll('[data-tog]').forEach(btn => btn.onclick = async () => {
+    const b = list.find(x => x.id === btn.dataset.tog);
+    try{
+      const od = await getDoc(doc(fdb, 'ownerData', b.id));
+      const batch = writeBatch(fdb);
+      batch.update(doc(fdb, 'businesses', b.id), {joinOpen: !b.joinOpen});
+      if(od.exists()) batch.update(doc(fdb, 'joinCodes', od.data().codeHash), {active: !b.joinOpen});
+      await batch.commit(); openOwner();
+    }catch(e){ toast('נכשל (' + (e.code || '') + ')'); }
+  });
+  sheet.querySelectorAll('[data-adm]').forEach(btn => btn.onclick = async () => {
+    const em = sheet.querySelector(`[data-adm-in="${btn.dataset.adm}"]`).value.trim().toLowerCase();
+    if(!/^[^\s@\/]+@[^\s@\/]+\.[^\s@\/]+$/.test(em)){ toast('המייל לא תקין'); return; }
+    try{ await setDoc(doc(fdb, 'businesses', btn.dataset.adm, 'admins', em), {role: 'admin'}); toast('האדמין נוסף ✔︎'); openOwner(); }
+    catch(e){ toast('נכשל (' + (e.code || '') + ')'); }
+  });
+  if($('migGo')) $('migGo').onclick = async () => {
+    $('migGo').disabled = true; $('migMsg').textContent = '⏳ מעביר…';
+    try{ const n = await migrateLegacy($('migTo').value, m => $('migMsg').textContent = m); $('migMsg').textContent = `✅ הועברו ${n} עובדים. אפשר לעבור לעסק ולבדוק.`; }
+    catch(e){ $('migMsg').textContent = '⚠️ ההעברה נעצרה (' + (e.code || e.message) + ') – אפשר להריץ שוב.'; $('migGo').disabled = false; }
+  };
+}
+$('ownerBtn').onclick = openOwner;
+$('ownerBtn2').onclick = () => { showLogin(false); openOwner(); };
+
+
+/* ---------- אדמינים של העסק (אדמין העסק בלבד) ---------- */
+async function openBizAdmins(){
+  if(!isSuper) return;
+  let list = [];
+  try{ list = (await getDocs(collection(fdb, ...BP(), 'admins'))).docs.map(d => d.id).sort(); }catch(e){ toast('אין הרשאה (' + (e.code || '') + ')'); return; }
+  const me = (currentUser && currentUser.email || '').toLowerCase();
+  sheet.innerHTML = `<h3>👥 אדמינים של ${esc(bizName)}</h3>
+    <div class="hint">אדמין רואה את כל העובדים בעסק, מאשר עובדים חדשים, מנהל את העץ ואת NetSuite. אדמין חדש צריך להצטרף עם קוד העסק; אחרי שהוא מצטרף הוא מאושר אוטומטית.</div>
+    ${list.map(em => `<div class="emp" style="margin-top:8px;display:flex;justify-content:space-between;align-items:center"><span class="ltr">${esc(em)}</span>
+      ${em === me ? '<span class="note">(אתה)</span>' : `<button class="btn danger" data-rm="${esc(em)}" style="padding:6px 10px">הסרה</button>`}</div>`).join('')}
+    <div class="grid2" style="grid-template-columns:1fr auto;margin-top:10px"><input id="adNew" class="ltr" placeholder="מייל Google של אדמין חדש" style="font-size:15px;padding:9px;border:1px solid var(--line);border-radius:10px;font-family:inherit"><button class="btn primary" id="adAdd">הוספה</button></div>
+    <div class="actions"><button class="btn" id="adX">סגירה</button></div>`;
+  $('adX').onclick = closeSheet;
+  $('adAdd').onclick = async () => {
+    const em = $('adNew').value.trim().toLowerCase();
+    if(!/^[^\s@\/]+@[^\s@\/]+\.[^\s@\/]+$/.test(em)){ toast('המייל לא תקין'); return; }
+    try{ await setDoc(doc(fdb, ...BP(), 'admins', em), {role: 'admin'}); openBizAdmins(); }catch(e){ toast('נכשל (' + (e.code || '') + ')'); }
+  };
+  sheet.querySelectorAll('[data-rm]').forEach(b => b.onclick = async () => {
+    try{ await deleteDoc(doc(fdb, ...BP(), 'admins', b.dataset.rm)); openBizAdmins(); }catch(e){ toast('נכשל (' + (e.code || '') + ')'); }
+  });
+  showSheet();
+}
+$('aAdmins').onclick = () => openBizAdmins();
+
+
+/* ---------- 🕓 יומן שינויים: הצגת ההיסטוריה של יום ---------- */
+const ACT = {import:'📥 יובא מהגרסה הקודמת', in:'כניסה', out:'יציאה', add:'הוספה', edit:'עריכה', delete:'מחיקה', attach:'צירוף אישור', detach:'הסרת אישור', project:'שינוי פרויקט', restore:'שחזור מהודעה'};
+function daySummary(d){
+  if(!d) return '<span class="note">— (ריק)</span>';
+  const p = [];
+  if(d.s && d.s.length) p.push(d.s.map(x => `<span class="ltr">${esc(x.i)}–${esc(x.o || '…')}</span>`).join(', '));
+  if(d.a && ABS[d.a.t]) p.push(`${ABS[d.a.t].e} ${d.a.p === 0.5 ? 'חצי ' : ''}${ABS[d.a.t].l}`);
+  if(d.r) p.push('🪖'); if(d.f) p.push('📎');
+  if(d.n) p.push(`<span class="note">${esc(str(d.n, 200))}</span>`);
+  return p.join(' · ') || '<span class="note">—</span>';
+}
+async function openHistory(ownerUid, dk, ownerName, back){
+  sheet.innerHTML = `<h3>🕓 היסטוריית שינויים – ${dayLabel(dk)}</h3><div class="note" style="padding:16px;text-align:center">טוען…</div>`; showSheet();
+  let items = [];
+  try{
+    const qs = await getDocs(query(collection(fdb, ...BP(), 'users', ownerUid, 'audit'), where('dk', '==', dk)));
+    items = qs.docs.map(d => d.data()).filter(a => a && a.at).sort((a, b) => a.at.toMillis() - b.at.toMillis());
+  }catch(e){ sheet.innerHTML = `<h3>🕓 היסטוריית שינויים</h3><div class="hint" style="color:var(--out)">לא ניתן לטעון (${esc(e.code || '')})</div><div class="actions"><button class="btn" id="hX">סגירה</button></div>`; $('hX').onclick = back || closeSheet; return; }
+  const who = by => by === 'import' ? 'העברת נתונים' : by === ownerUid ? esc(ownerName || 'העובד') : esc((team.find(u => u.uid === by) || {}).name || 'אחר');
+  sheet.innerHTML = `<h3>🕓 היסטוריית שינויים – ${dayLabel(dk)}</h3>
+    <div class="hint">כל שינוי נרשם אוטומטית עם שעת השרת, ואי אפשר למחוק או לערוך את היומן – גם לא אדמין.</div>
+    ${items.length ? items.map(a => {
+      const t = a.at.toDate(), late = Math.floor((t - parseDK(dk)) / 864e5);
+      return `<div class="emp" style="margin-top:8px"><div class="top"><span>${esc(ACT[a.action] || a.action || 'שינוי')}</span>
+        <span class="note ltr">${pad(t.getDate())}/${pad(t.getMonth()+1)}/${t.getFullYear()} ${pad(t.getHours())}:${pad(t.getMinutes())}</span></div>
+        <div class="meta">על ידי ${who(a.by)}${late >= 2 && a.action !== 'import' ? ` · <b style="color:var(--out)">${late} ימים אחרי היום המדווח</b>` : ''}</div>
+        <div class="meta">לפני: ${daySummary(a.before)}</div><div class="meta">אחרי: ${daySummary(a.after)}</div></div>`;
+    }).join('') : '<div class="note" style="padding:14px;text-align:center">אין שינויים רשומים ליום הזה.</div>'}
+    <div class="actions"><button class="btn" id="hX">${back ? 'חזרה' : 'סגירה'}</button></div>`;
+  $('hX').onclick = back || closeSheet;
+}
+
+
+/* ---------- 📦 העברה חד-פעמית מהגרסה של עסק אחד (בעל המערכת בלבד) ----------
+   מעתיקה, לא מוחקת. בזמן ההעברה העסק מסומן migration=true, ורק אז הכללים מאפשרים לבעל המערכת לכתוב בו. */
+async function migrateLegacy(target, progress){
+  const B = ['businesses', target];
+  await updateDoc(doc(fdb, 'businesses', target), {migration: true});
+  try{
+    const us = await getDocs(collection(fdb, 'users'));
+    let n = 0;
+    for(const u of us.docs){
+      n++; progress && progress(`⏳ עובד ${n} מתוך ${us.size}…`);
+      const p = u.data();
+      await setDoc(doc(fdb, ...B, 'users', u.id), {name: str(p.name, 80), email: str(p.email, 120).toLowerCase(), lastSeen: str(p.lastSeen, 10)});
+      const mref = doc(fdb, 'memberships', u.id + '_' + target);
+      if(!(await getDoc(mref)).exists()) await setDoc(mref, {uid: u.id, bid: target, code: 'migrated', at: dateKey(new Date())});
+      for(const d of (await getDocs(collection(fdb, 'users', u.id, 'data'))).docs){
+        if(d.id === 'settings'){ const st = fixSettings(d.data()); await setDoc(doc(fdb, ...B, 'users', u.id, 'data', 'settings'), {std: st.std, thu: st.thu, nsUser: st.nsUser}); }
+        else if(/^m-\d{4}-\d{2}$/.test(d.id)){
+          const days = cleanMonth(d.data()).days;
+          await setDoc(doc(fdb, ...B, 'users', u.id, 'data', d.id), {days});
+          // נקודת פתיחה ביומן: כל יום קיים נרשם כ"יובא מהגרסה הקודמת" (פעם אחת בלבד, גם אם מריצים שוב)
+          for(const dk of Object.keys(days)){
+            const aref = doc(fdb, ...B, 'users', u.id, 'audit', 'import-' + dk);
+            if(!(await getDoc(aref)).exists()) await setDoc(aref, {at: serverTimestamp(), by: 'import', dk, action: 'import', before: null, after: days[dk]});
+          }
+        }
+      }
+      for(const f of (await getDocs(collection(fdb, 'users', u.id, 'files'))).docs){
+        const x = f.data();
+        if(/^\d{4}-\d{2}-\d{2}$/.test(f.id) && typeof x.data === 'string') await setDoc(doc(fdb, ...B, 'users', u.id, 'files', f.id), {name: str(x.name, 120), type: x.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg', data: x.data, size: x.data.length, at: str(x.at, 10)});
+      }
+    }
+    progress && progress('⏳ עץ ארגוני והגדרות…');
+    for(const o of (await getDocs(collection(fdb, 'org'))).docs){
+      const x = o.data();
+      await setDoc(doc(fdb, ...B, 'org', o.id), {manager: str(x.manager, 128), ancestors: Array.isArray(x.ancestors) ? x.ancestors.filter(a => typeof a === 'string').slice(0, 20) : [], blocked: x.blocked === true, name: str(x.name, 80)});
+    }
+    const cs = await getDoc(doc(fdb, 'config', 'netsuite'));
+    if(cs.exists()) await setDoc(doc(fdb, ...B, 'config', 'netsuite'), JSON.parse(JSON.stringify(cs.data())));
+    return us.size;
+  } finally {
+    await updateDoc(doc(fdb, 'businesses', target), {migration: false}).catch(() => {});
+  }
+}
 
 /* ---------- start ---------- */
 render();
